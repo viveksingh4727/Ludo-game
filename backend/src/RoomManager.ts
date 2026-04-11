@@ -20,6 +20,7 @@ interface Room {
     player1: User,
     player2: User,
     turn: string,
+    lastRoll?: number | undefined,
     //boardState
 }
 
@@ -72,7 +73,7 @@ export class RoomManager {
             player2.color = 'BLUE',
             player2.tokens = this.generateStartingTokens('BLUE');
 
-            const newRoom: Room = {roomId, player1, player2, turn: 'RED'};
+            const newRoom: Room = {roomId, player1, player2, turn: 'RED' };
             this.activeRooms.set(roomId, newRoom); 
 
             this.playerRooms.set(player1.socket, roomId);
@@ -118,6 +119,7 @@ export class RoomManager {
         }
 
         const diceVal = Math.floor(Math.random() * 6)+1;
+        room.lastRoll = diceVal;
         console.log(`${player.name} (${player.color}) rolled a ${diceVal}`)
 
         //broadcasting result
@@ -130,6 +132,96 @@ export class RoomManager {
         room.player1.socket.send(rollMsg);
         room.player2.socket.send(rollMsg);
 
+        //checking tokens for turn
+        const hasActiveTokens = player.tokens?.some(t => t.state === 'ACTIVE');
+
+        if(!hasActiveTokens && diceVal !== 6) {
+            room.lastRoll = undefined;
+            room.turn = room.turn === 'RED' ? 'BLUE' : 'RED';
+            //skipping turn
+            const skipMsg = JSON.stringify({
+                type: 'turn-skipped',
+                turn: room.turn,
+                message: `${player.name} has no valid moves, passing turn to ${room.turn}`
+            });
+
+            room.player1.socket.send(skipMsg);
+            room.player2.socket.send(skipMsg);
+        }       
+    }
+
+    public moveToken(socket: WebSocket, tokenId: string) {
+        const roomId = this.playerRooms.get(socket);
+        if(!roomId) return;
+
+        const room = this.activeRooms.get(roomId);
+        if(!room) return;
+
+        const isPlayer1 = room.player1.socket === socket;
+        const player = isPlayer1 ? room.player1 : room.player2
+
+        if(room.turn !== player.color) return;
+        if(!room.lastRoll) return; //dice have'nt been rolled
+        
+        //finding specific token the user want to move
+        const token = player.tokens?.find(t => t.id === tokenId);
+        if(!token) return;
+
+        const roll = room.lastRoll;
+
+        //movement logic
+        if(token.state === 'YARD') {
+            if(roll === 6) {
+                token.state = 'ACTIVE';
+                token.position = 0;
+            } else {
+                socket.send(JSON.stringify({
+                    type: 'error',
+                    message: 'you need a 6 to unlock'
+                }));
+                return;
+            }
+        }
+        else if(token.state === 'ACTIVE') {
+            const newPosition = token.position + roll;
+
+            if(newPosition > 57) {
+                socket.send(JSON.stringify({
+                    type: 'error',
+                    message: 'move exceeds the home'
+                }));
+                return;
+            } else if (newPosition === 57) {
+                token.state = 'HOME';
+                token.position = 57; 
+            } else {
+                token.position = newPosition;
+            }
+        }
+
+        console.log(`${player.name} moved ${tokenId} to ${token.position}`);
+
+
+        //clear roll and switch turn
+        room.lastRoll = undefined;
+
+        //swaping turns if the roll isn't 6
+        if(roll !== 6) {
+            room.turn = room.turn === 'RED' ? 'BLUE' : 'RED';
+        }
+
+        const updateMsg = JSON.stringify({
+            type: 'board-update',
+            turn: room.turn,
+            player1Tokens: room.player1.tokens,
+            player2Tokens: room.player2.tokens,
+        });
+
+        room.player1.socket.send(updateMsg);
+        room.player2.socket.send(updateMsg);
+
+
+        
     }
     public removePlayer (socket: WebSocket) {
 

@@ -26,6 +26,9 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
             }
             else if (parsed.action === 'roll-dice') {
                 roomManger.rollDice(ws);
+            } 
+            else if (parsed.action === 'move-token') {
+                roomManger.moveToken(ws, parsed.tokenId);
             }
         } catch (error) {
             console.error("Invalid json received", message.toString());
