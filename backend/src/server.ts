@@ -17,7 +17,7 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
     ws.on('message', (message: WebSocket.RawData) => {
         try {
             const parsedMessage = JSON.parse(message.toString());
-            console.log(`Received ${message}`);
+            console.log("Received", parsedMessage);
 
             ws.send(JSON.stringify({type: "ACK", message: "Message received"}))
         } catch (error) {
@@ -25,7 +25,7 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
         }
     });
 
-    wss.on('close', () => {
+    ws.on('close', () => {
         console.log("Client disconnect");
     });
 
@@ -35,8 +35,8 @@ app.get("/health", (req: Request, res: Response) => {
     res.send("Server is running");
 });
 
-const PORT = 7000;
-app.listen(PORT, () => {
+const PORT = 8080;
+server.listen(PORT, () => {
     console.log(`Server running on port: ${PORT}`);
 })
 
