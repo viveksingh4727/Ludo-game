@@ -19,6 +19,7 @@ interface Room {
     roomId: string,
     player1: User,
     player2: User,
+    turn: string,
     //boardState
 }
 
@@ -28,6 +29,7 @@ export class RoomManager {
     private waitingQueue: User[] = [];
     //dicitionary of all active games mapped by their roomID
     private activeRooms: Map<string, Room> = new Map();
+    private playerRooms: Map<WebSocket, string> = new Map();
 
     private generateRoomId () {
         return 'room_' + Math.random().toString(36).substring(2, 8);
@@ -70,8 +72,11 @@ export class RoomManager {
             player2.color = 'BLUE',
             player2.tokens = this.generateStartingTokens('BLUE');
 
-            const newRoom: Room = {roomId, player1, player2};
+            const newRoom: Room = {roomId, player1, player2, turn: 'RED'};
             this.activeRooms.set(roomId, newRoom); 
+
+            this.playerRooms.set(player1.socket, roomId);
+            this.playerRooms.set(player2.socket, roomId);
 
             player1.socket.send(JSON.stringify({
                 type: "game-start",
@@ -88,8 +93,44 @@ export class RoomManager {
             }));
 
         }
-     }
+    }
 
+    public rollDice(socket: WebSocket) {
+        //find the room of player
+        const roomId = this.playerRooms.get(socket);
+        if(!roomId) return;
+
+        //roomdata
+        const room = this.activeRooms.get(roomId);
+        if(!room) return;
+
+        //check sender player1 or player2
+        const isPlayer1 = room.player1.socket === socket;
+        const player = isPlayer1 ? room.player1 : room.player2;
+        
+        //checking for turn
+        if(room.turn !== player.color) {
+            socket.send(JSON.stringify({
+                type: 'error',
+                message: 'Not your turn!'
+            }));
+            return;
+        }
+
+        const diceVal = Math.floor(Math.random() * 6)+1;
+        console.log(`${player.name} (${player.color}) rolled a ${diceVal}`)
+
+        //broadcasting result
+        const rollMsg = JSON.stringify({
+            type: 'dice-rolled',
+            color: player.color,
+            value: diceVal,
+        });
+
+        room.player1.socket.send(rollMsg);
+        room.player2.socket.send(rollMsg);
+
+    }
     public removePlayer (socket: WebSocket) {
 
         this.waitingQueue = this.waitingQueue.filter(user => user.socket != socket);        

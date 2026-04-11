@@ -24,6 +24,9 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
                 const playerName = parsed.playerName;
                 roomManger.addPlayer(ws, playerName)
             }
+            else if (parsed.action === 'roll-dice') {
+                roomManger.rollDice(ws);
+            }
         } catch (error) {
             console.error("Invalid json received", message.toString());
         }
