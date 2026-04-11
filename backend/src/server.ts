@@ -2,6 +2,7 @@ import express, {Request, Response} from "express";
 import http from "node:http";
 import WebSocket, {WebSocketServer} from "ws";
 import cors from "cors";
+import { RoomManager } from "./RoomManager";
 
 
 const app = express();
@@ -11,15 +12,18 @@ const server = http.createServer(app);
 
 const wss = new WebSocketServer({ server });
 
+const roomManger = new RoomManager();
+
 wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
     console.log(`New client connected from ${req.socket.remoteAddress}`);
 
     ws.on('message', (message: WebSocket.RawData) => {
         try {
-            const parsedMessage = JSON.parse(message.toString());
-            console.log("Received", parsedMessage);
-
-            ws.send(JSON.stringify({type: "ACK", message: "Message received"}))
+            const parsed = JSON.parse(message.toString());
+            if(parsed.action === 'find-match') {
+                const playerName = parsed.playerName;
+                roomManger.addPlayer(ws, playerName)
+            }
         } catch (error) {
             console.error("Invalid json received", message.toString());
         }
@@ -27,6 +31,7 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
 
     ws.on('close', () => {
         console.log("Client disconnect");
+        roomManger.removePlayer(ws);
     });
 
 });
