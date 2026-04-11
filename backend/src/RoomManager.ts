@@ -2,26 +2,35 @@ import WebSocket from "ws";
 
 type TokenState = "YARD" | "ACTIVE" | "HOME";
 
+const SAFE_TILES = [0, 8, 13, 21, 26, 34, 39, 47];
+
 interface Token {
-    id: string,
-    state: TokenState,
-    position: number,
+    id: string;
+    state: TokenState;
+    position: number;
 }
 
 interface User {
-    name: string,
-    socket: WebSocket,
-    color?: string,
+    name: string;
+    socket: WebSocket;
+    color?: string;
     tokens?: Token[];
 }
 
 interface Room {
-    roomId: string,
-    player1: User,
-    player2: User,
-    turn: string,
-    lastRoll?: number | undefined,
+    roomId: string;
+    player1: User;
+    player2: User;
+    turn: string;
+    lastRoll?: number | undefined;
     //boardState
+}
+
+const OFF_SETS: Record<string, number> = {
+    'RED': 0,
+    'GREEN': 13,
+    'YELLOW': 26,
+    'BLUE': 39,
 }
 
 export class RoomManager {
@@ -43,6 +52,17 @@ export class RoomManager {
             position: -1,
         }))
 
+    }
+
+    private getAbsolutePosition(color: string, relativePosition: number): number{
+        //if the token is in yard or in home stretch that is above 51 it is safe
+
+        if(relativePosition < 0 || relativePosition > 50) {
+            return -1;
+        }
+
+        const offset = OFF_SETS[color] || 0;
+        return (relativePosition + offset) % 52;
     }
 
     public addPlayer(socket: WebSocket, name: string) {
@@ -67,7 +87,7 @@ export class RoomManager {
 
             const roomId = this.generateRoomId();
 
-            player1.color = 'RED',
+            player1.color = 'RED';
             player1.tokens = this.generateStartingTokens('RED');
 
             player2.color = 'BLUE',
@@ -92,8 +112,37 @@ export class RoomManager {
                 color: player2.color,
                 tokens: player2.tokens,
             }));
-
         }
+    }
+
+    private handlePlayerLeave(socket: WebSocket, isSurrender: boolean) {
+        //remove from waiting queue
+        this.waitingQueue = this.waitingQueue.filter(user => user.socket !== socket);
+
+        const roomId = this.playerRooms.get(socket);
+        if(!roomId) return;
+
+        const room = this.activeRooms.get(roomId);
+        if(!room) return;
+
+        const isPlayer1 = room.player1.socket === socket;
+        const leaver = isPlayer1 ? room.player1 : room.player2;
+        const winner = isPlayer1 ? room.player2 : room.player1;
+        
+        console.log(`${leaver.name} left the match! ${winner.name} wins the match`);
+
+        const reason = isSurrender ? 'opponent-surrenderd' : 'opponent-disconnected';
+
+        winner.socket.send(JSON.stringify({
+            type: 'game-over',
+            reason: reason,
+            message: `${leaver.name} has left the match, You win!`
+        }))
+
+        //deleting the room to prevent memory leaks
+        this.activeRooms.delete(roomId);
+        this.playerRooms.delete(room.player1.socket);
+        this.playerRooms.delete(room.player2.socket);
     }
 
     public rollDice(socket: WebSocket) {
@@ -196,17 +245,41 @@ export class RoomManager {
                 token.position = 57; 
             } else {
                 token.position = newPosition;
+
+                //collision logic
+                const absolutePos = this.getAbsolutePosition(player.color!, token.position);
+
+                if(absolutePos !== -1 && !SAFE_TILES.includes(absolutePos)) {
+
+                    //find opponent
+                    const opponent = isPlayer1 ? room.player2 : room.player1;
+
+                    const eatenToken = opponent.tokens?.
+                    find(t => this.getAbsolutePosition(opponent.color!, t.position) === absolutePos);
+
+                    if(eatenToken) {
+                        console.log(`${player.name} ate ${opponent.name}: ${eatenToken.id}`);
+
+                        eatenToken.state = 'YARD';
+                        eatenToken.position = -1;
+
+                        //eating opponent grant extra turn faking roll to 6
+                        room.lastRoll = 6;
+
+                    }
+
+                }
             }
         }
 
         console.log(`${player.name} moved ${tokenId} to ${token.position}`);
 
-
+        const getExtraTurns = (roll === 6 || room.lastRoll === 6);
         //clear roll and switch turn
         room.lastRoll = undefined;
 
-        //swaping turns if the roll isn't 6
-        if(roll !== 6) {
+        // Swapping turns if they do not get an extra turn
+        if(!getExtraTurns) {
             room.turn = room.turn === 'RED' ? 'BLUE' : 'RED';
         }
 
@@ -218,14 +291,13 @@ export class RoomManager {
         });
 
         room.player1.socket.send(updateMsg);
-        room.player2.socket.send(updateMsg);
-
-
-        
+        room.player2.socket.send(updateMsg);        
     }
     public removePlayer (socket: WebSocket) {
+        this.handlePlayerLeave(socket, false);     
+    }
 
-        this.waitingQueue = this.waitingQueue.filter(user => user.socket != socket);        
-
+    public surrenderPlayer(socket: WebSocket) {
+        this.handlePlayerLeave(socket, true);
     }
 }
