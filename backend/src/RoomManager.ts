@@ -19,8 +19,7 @@ interface User {
 
 interface Room {
     roomId: string;
-    player1: User;
-    player2: User;
+    players: User[];
     turn: string;
     lastRoll?: number | undefined;
     //boardState
@@ -32,6 +31,9 @@ const OFF_SETS: Record<string, number> = {
     'YELLOW': 26,
     'BLUE': 39,
 }
+
+const TURN_ORDER = ['RED', 'GREEN', 'YELLOW', 'BLUE'];
+
 
 export class RoomManager {
 
@@ -65,6 +67,12 @@ export class RoomManager {
         return (relativePosition + offset) % 52;
     }
 
+    private getNextTurn(currentTurn: string): string {
+        const currentIndex = TURN_ORDER.indexOf(currentTurn);
+        const nextIndex = (currentIndex+1) % 4;
+        return TURN_ORDER[nextIndex] || 'RED';
+    }
+
     public addPlayer(socket: WebSocket, name: string) {
         const newUser: User = {socket, name};
         this.waitingQueue.push(newUser);
@@ -80,39 +88,35 @@ export class RoomManager {
 
     private startGame() {
         //check if the 2 players are in queue
-        if(this.waitingQueue.length >= 2) {
-            //pulling the first 2 player out of queue
-            const player1 = this.waitingQueue.shift()!;
-            const player2 = this.waitingQueue.shift()!;
-
+        if(this.waitingQueue.length >= 4) {
+            const matchedPlayers = this.waitingQueue.splice(0,4);
             const roomId = this.generateRoomId();
 
-            player1.color = 'RED';
-            player1.tokens = this.generateStartingTokens('RED');
+            matchedPlayers.forEach((player, index) => {
+                const assignedColor = TURN_ORDER[index] || 'RED';
+                player.color = assignedColor;
+                player.tokens = this.generateStartingTokens(assignedColor);
+                this.playerRooms.set(player.socket, roomId);
+            })
 
-            player2.color = 'BLUE',
-            player2.tokens = this.generateStartingTokens('BLUE');
-
-            const newRoom: Room = {roomId, player1, player2, turn: 'RED' };
+            const newRoom: Room = {roomId, players: matchedPlayers, turn: 'RED' };
             this.activeRooms.set(roomId, newRoom); 
 
-            this.playerRooms.set(player1.socket, roomId);
-            this.playerRooms.set(player2.socket, roomId);
-
-            player1.socket.send(JSON.stringify({
-                type: "game-start",
-                roomId: roomId,
-                color: player1.color,
-                tokens: player1.tokens, //tokens to render on frontend
+            const allTokens = matchedPlayers.map(p => ({
+                color: p.color,
+                tokens: p.tokens,
             }));
 
-            player2.socket.send(JSON.stringify({
-                type: "game-start",
-                roomId: roomId,
-                color: player2.color,
-                tokens: player2.tokens,
-            }));
-        }
+            //broadcast 
+            matchedPlayers.forEach(player => {
+                player.socket.send(JSON.stringify({
+                    type: 'game-start',
+                    roomId: roomId,
+                    color: player.color,
+                    allPlayers: allTokens, 
+                }));
+            });
+    }
     }
 
     private handlePlayerLeave(socket: WebSocket, isSurrender: boolean) {
@@ -125,24 +129,27 @@ export class RoomManager {
         const room = this.activeRooms.get(roomId);
         if(!room) return;
 
-        const isPlayer1 = room.player1.socket === socket;
-        const leaver = isPlayer1 ? room.player1 : room.player2;
-        const winner = isPlayer1 ? room.player2 : room.player1;
+        const leaver = room.players.find(p => p.socket === socket);
+        if(!leaver) return;
         
-        console.log(`${leaver.name} left the match! ${winner.name} wins the match`);
+        console.log(`${leaver.name} left the match!`);
 
         const reason = isSurrender ? 'opponent-surrenderd' : 'opponent-disconnected';
 
-        winner.socket.send(JSON.stringify({
-            type: 'game-over',
-            reason: reason,
-            message: `${leaver.name} has left the match, You win!`
-        }))
+        room.players.forEach(player => {
+            if(player.socket !== socket) {
+                player.socket.send(JSON.stringify({
+                    type: 'game-over',
+                    reason: reason,
+                    message: `${leaver.name} has left the match, You win!`
+                }));
+            }
+
+            this.playerRooms.delete(player.socket);
+        })
 
         //deleting the room to prevent memory leaks
         this.activeRooms.delete(roomId);
-        this.playerRooms.delete(room.player1.socket);
-        this.playerRooms.delete(room.player2.socket);
     }
 
     public rollDice(socket: WebSocket) {
@@ -154,9 +161,8 @@ export class RoomManager {
         const room = this.activeRooms.get(roomId);
         if(!room) return;
 
-        //check sender player1 or player2
-        const isPlayer1 = room.player1.socket === socket;
-        const player = isPlayer1 ? room.player1 : room.player2;
+        const player = room.players.find(player => player.socket === socket);
+        if(!player) return;
         
         //checking for turn
         if(room.turn !== player.color) {
@@ -178,15 +184,14 @@ export class RoomManager {
             value: diceVal,
         });
 
-        room.player1.socket.send(rollMsg);
-        room.player2.socket.send(rollMsg);
+        room.players.forEach(p => p.socket.send(rollMsg));
 
         //checking tokens for turn
         const hasActiveTokens = player.tokens?.some(t => t.state === 'ACTIVE');
 
         if(!hasActiveTokens && diceVal !== 6) {
             room.lastRoll = undefined;
-            room.turn = room.turn === 'RED' ? 'BLUE' : 'RED';
+            room.turn = this.getNextTurn(room.turn);
             //skipping turn
             const skipMsg = JSON.stringify({
                 type: 'turn-skipped',
@@ -194,8 +199,7 @@ export class RoomManager {
                 message: `${player.name} has no valid moves, passing turn to ${room.turn}`
             });
 
-            room.player1.socket.send(skipMsg);
-            room.player2.socket.send(skipMsg);
+            room.players.forEach(p => p.socket.send(skipMsg));
         }       
     }
 
@@ -206,8 +210,8 @@ export class RoomManager {
         const room = this.activeRooms.get(roomId);
         if(!room) return;
 
-        const isPlayer1 = room.player1.socket === socket;
-        const player = isPlayer1 ? room.player1 : room.player2
+        const player = room.players.find(p => p.socket === socket);
+        if(!player) return;
 
         if(room.turn !== player.color) return;
         if(!room.lastRoll) return; //dice have'nt been rolled
@@ -251,13 +255,14 @@ export class RoomManager {
 
                 if(absolutePos !== -1 && !SAFE_TILES.includes(absolutePos)) {
 
-                    //find opponent
-                    const opponent = isPlayer1 ? room.player2 : room.player1;
+                    for(const opponent of room.players) {
+                        if(opponent === player) continue;
 
-                    const eatenToken = opponent.tokens?.
-                    find(t => this.getAbsolutePosition(opponent.color!, t.position) === absolutePos);
+                        const eatenToken = opponent.tokens?.
+                        find(t => this.getAbsolutePosition(opponent.color!, t.position) === absolutePos);
 
-                    if(eatenToken) {
+
+                        if(eatenToken) {
                         console.log(`${player.name} ate ${opponent.name}: ${eatenToken.id}`);
 
                         eatenToken.state = 'YARD';
@@ -266,8 +271,10 @@ export class RoomManager {
                         //eating opponent grant extra turn faking roll to 6
                         room.lastRoll = 6;
 
-                    }
+                        }
 
+                    }
+                    
                 }
             }
         }
@@ -280,18 +287,16 @@ export class RoomManager {
 
         // Swapping turns if they do not get an extra turn
         if(!getExtraTurns) {
-            room.turn = room.turn === 'RED' ? 'BLUE' : 'RED';
+            room.turn = this.getNextTurn(room.turn);
         }
 
         const updateMsg = JSON.stringify({
             type: 'board-update',
             turn: room.turn,
-            player1Tokens: room.player1.tokens,
-            player2Tokens: room.player2.tokens,
+            playersState: room.players.map(p => ({color: p.color, tokens: p.tokens}))
         });
 
-        room.player1.socket.send(updateMsg);
-        room.player2.socket.send(updateMsg);        
+        room.players.forEach(p => p.socket.send(updateMsg));     
     }
     public removePlayer (socket: WebSocket) {
         this.handlePlayerLeave(socket, false);     
